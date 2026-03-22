@@ -8,8 +8,14 @@
 #![warn(missing_debug_implementations)]
 
 pub mod error;
+pub mod session;
 
 pub use error::{Error, Result};
+pub use session::{
+    Backoff, ClarifyResult, ClarifyState, Confidence, DialogueState, ExecutionEvent, ExecutionPlan,
+    ExecutionResult, ExecutionStrategy, FailureAction, MissingInfo, Session, Step, StepResult,
+    Task, TaskBuilder, ToolResult, UserIntent,
+};
 
 #[cfg(test)]
 mod tests {
