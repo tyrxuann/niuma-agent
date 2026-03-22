@@ -147,10 +147,34 @@ pub struct ToolCall {
     /// The ID of the tool call.
     pub id: String,
     /// The type of the tool (always "function" for now).
-    #[serde(rename = "type")]
     pub tool_type: ToolType,
     /// The function call details.
     pub function: FunctionCall,
+}
+
+impl ToolCall {
+    /// Returns the name of the function to call.
+    #[must_use]
+    pub fn function_name(&self) -> &str {
+        &self.function.name
+    }
+
+    /// Parses the arguments as a JSON value.
+    ///
+    /// Returns `None` if the arguments are not valid JSON.
+    #[must_use]
+    pub fn parse_args(&self) -> Option<serde_json::Value> {
+        serde_json::from_str(&self.function.arguments).ok()
+    }
+}
+
+/// A batch of tool calls extracted from an LLM response.
+#[derive(Debug, Clone)]
+pub struct ToolCallBatch {
+    /// The tool calls in this batch.
+    pub calls: Vec<ToolCall>,
+    /// The text content (if any) from the response.
+    pub text: String,
 }
 
 /// The type of tool being called.
@@ -293,6 +317,48 @@ pub struct ChatCompletionResponse {
     pub usage: Usage,
 }
 
+impl ChatCompletionResponse {
+    /// Returns the first message content as a string, if available.
+    #[must_use]
+    pub fn content(&self) -> Option<&str> {
+        self.choices.first().and_then(|c| match &c.message.content {
+            Content::Text(text) => Some(text.as_str()),
+            Content::Parts(_) => None,
+        })
+    }
+
+    /// Extracts all tool calls from the response as a batch.
+    ///
+    /// Returns `None` if there are no tool calls in the response.
+    #[must_use]
+    pub fn tool_call_batch(&self) -> Option<ToolCallBatch> {
+        let choice = self.choices.first()?;
+
+        let text = match &choice.message.content {
+            Content::Text(t) => t.clone(),
+            Content::Parts(_) => String::new(),
+        };
+
+        let calls: Vec<ToolCall> = choice.message.tool_calls.clone()?;
+
+        if calls.is_empty() {
+            return None;
+        }
+
+        Some(ToolCallBatch { calls, text })
+    }
+
+    /// Returns true if the response contains tool calls.
+    #[must_use]
+    pub fn has_tool_calls(&self) -> bool {
+        self.choices
+            .first()
+            .and_then(|c| c.message.tool_calls.as_ref())
+            .map(|t| !t.is_empty())
+            .unwrap_or(false)
+    }
+}
+
 /// A choice in a chat completion response.
 #[derive(Debug, Clone)]
 pub struct ChatChoice {
@@ -423,5 +489,103 @@ mod tests {
             }),
         );
         assert_eq!(tool.function.name, "get_weather");
+    }
+
+    #[test]
+    fn test_tool_call_parse_args() {
+        let tc = ToolCall {
+            id: "call_123".to_string(),
+            tool_type: ToolType::Function,
+            function: FunctionCall {
+                name: "get_weather".to_string(),
+                arguments: r#"{"location": "Beijing"}"#.to_string(),
+            },
+        };
+
+        assert_eq!(tc.function_name(), "get_weather");
+        let args = tc.parse_args();
+        assert!(args.is_some());
+        assert_eq!(args.unwrap()["location"], "Beijing");
+    }
+
+    #[test]
+    fn test_tool_call_parse_args_invalid() {
+        let tc = ToolCall {
+            id: "call_123".to_string(),
+            tool_type: ToolType::Function,
+            function: FunctionCall {
+                name: "test".to_string(),
+                arguments: "not valid json".to_string(),
+            },
+        };
+
+        assert!(tc.parse_args().is_none());
+    }
+
+    #[test]
+    fn test_response_tool_call_batch() {
+        let tc1 = ToolCall {
+            id: "1".to_string(),
+            tool_type: ToolType::Function,
+            function: FunctionCall {
+                name: "tool1".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+        let tc2 = ToolCall {
+            id: "2".to_string(),
+            tool_type: ToolType::Function,
+            function: FunctionCall {
+                name: "tool2".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+
+        let response = ChatCompletionResponse {
+            id: "test".to_string(),
+            model: "test".to_string(),
+            choices: vec![ChatChoice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: Content::Text("thinking".to_string()),
+                    tool_calls: Some(vec![tc1, tc2]),
+                    tool_call_id: None,
+                    name: None,
+                },
+                finish_reason: FinishReason::ToolCall,
+            }],
+            usage: Usage::default(),
+        };
+
+        let batch = response.tool_call_batch();
+        assert!(batch.is_some());
+        let batch = batch.unwrap();
+        assert_eq!(batch.calls.len(), 2);
+        assert_eq!(batch.text, "thinking");
+        assert!(response.has_tool_calls());
+    }
+
+    #[test]
+    fn test_response_no_tool_calls() {
+        let response = ChatCompletionResponse {
+            id: "test".to_string(),
+            model: "test".to_string(),
+            choices: vec![ChatChoice {
+                index: 0,
+                message: Message {
+                    role: Role::Assistant,
+                    content: Content::Text("hello".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                },
+                finish_reason: FinishReason::Stop,
+            }],
+            usage: Usage::default(),
+        };
+
+        assert!(response.tool_call_batch().is_none());
+        assert!(!response.has_tool_calls());
     }
 }

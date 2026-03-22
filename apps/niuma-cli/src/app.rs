@@ -3,7 +3,7 @@
 //! This module contains the core App struct that manages the application state,
 //! including the current view, chat messages, tasks, and logs.
 
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use crate::event::InputEvent;
 
@@ -102,6 +102,10 @@ pub struct LogEntry {
 
 /// Log level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    dead_code,
+    reason = "Part of public API for future log display features"
+)]
 pub enum LogLevel {
     /// Information message.
     Info,
@@ -148,6 +152,12 @@ pub struct App {
     pub connected: bool,
     /// Application version.
     pub version: &'static str,
+    /// Pending user input to be processed by the agent.
+    pending_input: Option<String>,
+    /// Whether the agent is currently processing a message.
+    pub is_processing: bool,
+    /// Agent engine (set during initialization).
+    agent: Option<Arc<super::agent::AgentEngine>>,
 }
 
 impl Default for App {
@@ -160,65 +170,32 @@ impl App {
     /// Creates a new application instance with default state.
     #[must_use]
     pub fn new() -> Self {
-        let messages = vec![
-            Message {
-                sender: MessageSender::Agent,
-                content: "Hi! What can I help you with?".to_string(),
-            },
-            Message {
-                sender: MessageSender::User,
-                content: "Export data from XX site".to_string(),
-            },
-            Message {
-                sender: MessageSender::Agent,
-                content: "Sure! What's the URL?".to_string(),
-            },
-        ];
-
-        let tasks = vec![
-            Task {
-                id: 1,
-                name: "Daily Data Export".to_string(),
-                schedule: "0 9 * * *".to_string(),
-                enabled: true,
-            },
-            Task {
-                id: 2,
-                name: "Weekly Report".to_string(),
-                schedule: "0 9 * * 1".to_string(),
-                enabled: true,
-            },
-            Task {
-                id: 3,
-                name: "Monthly Backup".to_string(),
-                schedule: "0 0 1 * *".to_string(),
-                enabled: false,
-            },
-        ];
-
-        let logs = vec![
-            LogEntry {
-                timestamp: Instant::now(),
-                level: LogLevel::Info,
-                message: "Application started".to_string(),
-            },
-            LogEntry {
-                timestamp: Instant::now(),
-                level: LogLevel::Debug,
-                message: "Loading configuration...".to_string(),
-            },
-        ];
+        let messages = vec![Message {
+            sender: MessageSender::Agent,
+            content: "Hi! What can I help you with?".to_string(),
+        }];
 
         Self {
             current_view: View::default(),
             messages,
             input: String::new(),
-            tasks,
-            logs,
+            tasks: Vec::new(),
+            logs: Vec::new(),
             should_quit: false,
             connected: true,
             version: "v0.1.0",
+            pending_input: None,
+            is_processing: false,
+            agent: None,
         }
+    }
+
+    /// Creates a new application instance with an agent engine.
+    #[must_use]
+    pub fn with_agent(agent: Arc<super::agent::AgentEngine>) -> Self {
+        let mut app = Self::new();
+        app.agent = Some(agent);
+        app
     }
 
     /// Handles an input event.
@@ -231,23 +208,35 @@ impl App {
             InputEvent::Clear => self.clear_current_view(),
             InputEvent::Quit => self.should_quit = true,
             InputEvent::Char(c) => {
-                // Only handle text input in chat view
-                if self.current_view == View::Chat {
+                // Only handle text input in chat view and when not processing
+                if self.current_view == View::Chat && !self.is_processing {
                     self.input.push(c);
                 }
             }
             InputEvent::Backspace => {
-                if self.current_view == View::Chat {
+                if self.current_view == View::Chat && !self.is_processing {
                     self.input.pop();
                 }
             }
             InputEvent::Enter => {
-                if self.current_view == View::Chat && !self.input.is_empty() {
-                    self.send_message();
+                if self.current_view == View::Chat && !self.input.is_empty() && !self.is_processing
+                {
+                    self.queue_message();
                 }
             }
             InputEvent::NoOp => {}
         }
+    }
+
+    /// Queues the current input as a pending message to be processed.
+    fn queue_message(&mut self) {
+        let content = std::mem::take(&mut self.input);
+        self.messages.push(Message {
+            sender: MessageSender::User,
+            content: content.clone(),
+        });
+        self.pending_input = Some(content);
+        self.is_processing = true;
     }
 
     /// Clears the content of the current view.
@@ -262,18 +251,43 @@ impl App {
         }
     }
 
-    /// Sends the current input as a user message.
-    fn send_message(&mut self) {
-        let content = std::mem::take(&mut self.input);
-        self.messages.push(Message {
-            sender: MessageSender::User,
-            content,
-        });
-    }
-
     /// Returns the number of enabled tasks.
     #[must_use]
     pub fn active_task_count(&self) -> usize {
         self.tasks.iter().filter(|t| t.enabled).count()
+    }
+
+    /// Processes pending messages using the agent engine.
+    /// This should be called in the main loop.
+    pub async fn process_pending(&mut self) {
+        let input = match self.pending_input.take() {
+            Some(i) => i,
+            None => return,
+        };
+
+        let agent = match &self.agent {
+            Some(a) => Arc::clone(a),
+            None => {
+                // No agent configured, just add a mock response
+                self.is_processing = false;
+                self.messages.push(Message {
+                    sender: MessageSender::Agent,
+                    content: format!(
+                        "Received: {}. Configure an LLM provider for full functionality.",
+                        input
+                    ),
+                });
+                return;
+            }
+        };
+
+        let response = agent.process_message(&input).await;
+        let display_text = response.display_text();
+
+        self.is_processing = false;
+        self.messages.push(Message {
+            sender: MessageSender::Agent,
+            content: display_text,
+        });
     }
 }

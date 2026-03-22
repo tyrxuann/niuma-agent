@@ -35,12 +35,14 @@ pub mod error;
 pub mod executor;
 pub mod intent;
 pub mod persistence;
+pub mod plan_cache;
 pub mod scheduler;
 
 pub use clarifier::{Clarifier, ClarifyContext};
 pub use error::{Error, Result};
 pub use executor::Executor;
 pub use intent::{IntentClassification, IntentParser};
+pub use plan_cache::PlanCache;
 pub use scheduler::{NoopExecutor, StorageConfig, TaskExecutor, TaskScheduler};
 
 #[cfg(test)]

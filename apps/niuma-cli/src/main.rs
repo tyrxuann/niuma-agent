@@ -3,17 +3,22 @@
 //! Niuma is an AI-powered task assistant that combines LLM reasoning
 //! with MCP tools to help you get things done.
 
+mod agent;
 mod app;
 mod error;
 mod event;
 mod terminal;
 mod ui;
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use clap::Parser;
+use tracing::info;
 
-use crate::{app::App, error::CliResult, event::EventHandler, terminal::TerminalGuard, ui::render};
+use crate::{
+    agent::AgentEngine, app::App, error::CliResult, event::EventHandler, terminal::TerminalGuard,
+    ui::render,
+};
 
 /// Niuma - An AI-powered task assistant.
 #[derive(Parser, Debug)]
@@ -25,6 +30,12 @@ struct Args {
 }
 
 fn main() -> CliResult<()> {
+    // Initialize logging
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_target(false)
+        .init();
+
     let args = Args::parse();
 
     if args.tui {
@@ -56,21 +67,53 @@ fn run_tui() -> CliResult<()> {
     // Initialize terminal
     let mut terminal_guard = TerminalGuard::new()?;
 
+    // Create agent engine
+    let agent = create_agent_engine();
+
     // Create app and event handler
-    let mut app = App::new();
+    let mut app = App::with_agent(Arc::clone(&agent));
     let events = EventHandler::new(Duration::from_millis(100));
 
     // Main event loop
-    while !app.should_quit {
-        // Draw UI
-        terminal_guard
-            .terminal()
-            .draw(|frame| render(&mut app, frame))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create runtime");
 
-        // Handle input
-        let event = events.next()?;
-        app.handle_event(event);
-    }
+    runtime.block_on(async {
+        while !app.should_quit {
+            // Process any pending messages
+            app.process_pending().await;
 
+            // Draw UI
+            terminal_guard
+                .terminal()
+                .draw(|frame| render(&mut app, frame))
+                .expect("Failed to draw");
+
+            // Handle input
+            let event = events.next().expect("Failed to read event");
+            app.handle_event(event);
+        }
+    });
+
+    info!("Application shutting down");
     Ok(())
+}
+
+/// Creates the agent engine with configured LLM provider.
+fn create_agent_engine() -> Arc<AgentEngine> {
+    // Try to get API key from environment
+    let api_key = std::env::var("CLAUDE_API_KEY")
+        .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+        .unwrap_or_else(|_| {
+            info!("No API key found, using mock mode");
+            "mock-api-key".to_string()
+        });
+
+    let llm_provider: Arc<dyn niuma_llm::LLMProvider> =
+        Arc::new(niuma_llm::ClaudeProvider::new(&api_key));
+
+    info!(provider = llm_provider.name(), "Agent engine initialized");
+    Arc::new(AgentEngine::new(llm_provider))
 }

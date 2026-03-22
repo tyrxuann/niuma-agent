@@ -85,6 +85,48 @@ impl Executor {
     /// Returns an error if the tool is not found or execution fails.
     #[instrument(skip(self))]
     pub async fn execute_step(&self, step: &Step) -> Result<StepResult> {
+        self.execute_step_internal(step, true).await
+    }
+
+    /// Executes a batch of steps in order.
+    ///
+    /// Each step is executed sequentially. If a step fails, execution
+    /// continues with the next step unless `stop_on_error` is true.
+    ///
+    /// # Arguments
+    ///
+    /// * `steps` - The steps to execute
+    /// * `stop_on_error` - Whether to stop execution when a step fails
+    ///
+    /// # Returns
+    ///
+    /// A vector of step results in the same order as the input steps.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if a tool is not found (which would affect all subsequent steps).
+    #[instrument(skip(self))]
+    pub async fn execute_step_batch(
+        &self,
+        steps: &[Step],
+        stop_on_error: bool,
+    ) -> Vec<Result<StepResult>> {
+        let mut results = Vec::with_capacity(steps.len());
+
+        for step in steps {
+            let result = self.execute_step_internal(step, stop_on_error).await;
+            results.push(result);
+
+            if stop_on_error && results.last().is_some_and(|r| r.is_err()) {
+                break;
+            }
+        }
+
+        results
+    }
+
+    /// Internal method that executes a single step.
+    async fn execute_step_internal(&self, step: &Step, _stop_on_error: bool) -> Result<StepResult> {
         let start = Instant::now();
 
         debug!(step_id = step.id, tool = step.tool, "Executing step");
@@ -322,6 +364,124 @@ Respond with JSON:
         Self::parse_failure_action(&content, &step_result.step_id, has_more_steps)
     }
 
+    /// Determines the failure action for a scheduled task execution.
+    ///
+    /// Scheduled tasks prefer auto-retry since there's no user present to ask.
+    /// This is a simplified version that defaults to retry for transient errors.
+    ///
+    /// # Arguments
+    ///
+    /// * `step_result` - The result of the failed step
+    ///
+    /// # Returns
+    ///
+    /// The recommended failure action for scheduled tasks.
+    #[instrument(skip(self))]
+    pub async fn determine_failure_action_scheduled(
+        &self,
+        step_result: &StepResult,
+    ) -> Result<FailureAction> {
+        // For scheduled tasks, prefer auto-retry with exponential backoff
+        // Use LLM to determine if the error is transient
+        let is_transient = self
+            .is_likely_transient_error(step_result.error.as_deref().unwrap_or("Unknown error"))
+            .await?;
+
+        if is_transient {
+            Ok(FailureAction::Retry {
+                max_attempts: 3,
+                backoff: niuma_core::Backoff::Exponential,
+            })
+        } else {
+            // For non-transient errors in scheduled tasks, skip the step
+            // rather than failing the entire schedule
+            Ok(FailureAction::Skip)
+        }
+    }
+
+    /// Determines the failure action for immediate task execution.
+    ///
+    /// Immediate tasks prefer asking the user since they're interactive.
+    ///
+    /// # Arguments
+    ///
+    /// * `_step_result` - The result of the failed step (available for context)
+    ///
+    /// # Returns
+    ///
+    /// The recommended failure action for immediate tasks.
+    #[instrument(skip(self, _step_result))]
+    pub async fn determine_failure_action_immediate(
+        &self,
+        _step_result: &StepResult,
+    ) -> Result<FailureAction> {
+        // For immediate tasks, prefer asking the user
+        Ok(FailureAction::AskUser)
+    }
+
+    /// Checks if an error is likely transient based on common patterns.
+    #[instrument(skip(self, error))]
+    async fn is_likely_transient_error(&self, error: &str) -> Result<bool> {
+        let prompt = format!(
+            r#"Is this error likely to be transient (temporary)? Examples of transient errors:
+- Network timeout, connection refused
+- Rate limiting
+- Temporary service unavailable
+- Resource temporarily unavailable
+
+Error: {}
+
+Respond with JSON:
+{{
+  "transient": true|false,
+  "reason": "brief explanation"
+}}"#,
+            error
+        );
+
+        let request = ChatCompletionRequest::new(
+            self.llm.default_model(),
+            vec![
+                Message::system("You are analyzing error patterns."),
+                Message::user(prompt),
+            ],
+        )
+        .with_max_tokens(64);
+
+        let response = self.llm.complete(&request).await?;
+        let content = Self::extract_content(&response)?;
+
+        Self::parse_transient_check(&content)
+    }
+
+    fn parse_transient_check(content: &str) -> Result<bool> {
+        let content = content.trim();
+        let json_str = if content.starts_with("```json") {
+            content
+                .trim_start_matches("```json")
+                .trim_end_matches("```")
+                .trim()
+        } else if content.starts_with("```") {
+            content
+                .trim_start_matches("```")
+                .trim_end_matches("```")
+                .trim()
+        } else {
+            content
+        };
+
+        #[derive(serde::Deserialize)]
+        struct TransientResult {
+            #[serde(alias = "transient", default)]
+            is_transient: Option<bool>,
+        }
+
+        let parsed: TransientResult = serde_json::from_str(json_str)
+            .map_err(|e| Error::Executor(format!("Failed to parse transient check: {}", e)))?;
+
+        Ok(parsed.is_transient.unwrap_or(false))
+    }
+
     fn extract_content(response: &niuma_llm::ChatCompletionResponse) -> Result<String> {
         response
             .choices
@@ -444,5 +604,56 @@ mod tests {
         assert_eq!(tools.tool_count(), 4);
         // Can't test fully without a real LLM, but we can verify construction
         // This would need a mock LLM for full testing
+    }
+
+    #[tokio::test]
+    async fn test_execute_step_batch() {
+        let tools = Arc::new(ToolRegistry::with_builtins());
+        let llm = Arc::new(niuma_llm::ClaudeProvider::new("test"));
+        let executor = Executor::new(llm, Arc::clone(&tools));
+
+        let steps = vec![
+            niuma_core::Step::new(
+                "s1",
+                "shell",
+                serde_json::json!({"command": "echo", "args": ["a"]}),
+            ),
+            niuma_core::Step::new(
+                "s2",
+                "shell",
+                serde_json::json!({"command": "echo", "args": ["b"]}),
+            ),
+        ];
+
+        let results = executor.execute_step_batch(&steps, false).await;
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_ok());
+        assert!(results[1].is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_execute_step_batch_stop_on_error() {
+        let tools = Arc::new(ToolRegistry::with_builtins());
+        let llm = Arc::new(niuma_llm::ClaudeProvider::new("test"));
+        let executor = Executor::new(llm, Arc::clone(&tools));
+
+        let steps = vec![
+            niuma_core::Step::new(
+                "s1",
+                "shell",
+                serde_json::json!({"command": "echo", "args": ["a"]}),
+            ),
+            niuma_core::Step::new("s2", "nonexistent_tool", serde_json::json!({})),
+            niuma_core::Step::new(
+                "s3",
+                "shell",
+                serde_json::json!({"command": "echo", "args": ["c"]}),
+            ),
+        ];
+
+        let results = executor.execute_step_batch(&steps, true).await;
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_ok());
+        assert!(results[1].is_err()); // Nonexistent tool
     }
 }

@@ -1,0 +1,26 @@
+# Niuma Agent Configuration
+#
+# All API keys should be provided via environment variables.
+# Use ${VAR_NAME} syntax for environment variable expansion.
+
+llm:
+  default: "claude"
+  providers:
+    claude:
+      api_key: "${CLAUDE_API_KEY}"
+      model: "claude-sonnet-4-6"
+    openai:
+      api_key: "${OPENAI_API_KEY}"
+      model: "gpt-4o"
+
+mcp_servers:
+  playwright:
+    command: "npx"
+    args: ["-y", "@playwright/mcp"]
+    env:
+      HEADLESS: "true"
+
+storage:
+  schedules_dir: "./data/schedules"
+  cache_dir: "./data/cache"
+  logs_dir: "./data/logs"

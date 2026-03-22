@@ -546,6 +546,11 @@ impl ClarifyContext {
         self.current_question.as_deref()
     }
 
+    /// Sets the current question to ask the user.
+    pub fn set_current_question(&mut self, question: String) {
+        self.current_question = Some(question);
+    }
+
     /// Returns gathered information for a field.
     #[must_use]
     pub fn get(&self, field: &str) -> Option<&str> {

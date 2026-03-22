@@ -52,8 +52,8 @@ pub use provider::LLMProvider;
 pub use types::{
     ChatChoice, ChatChunkChoice, ChatCompletionChunk, ChatCompletionRequest,
     ChatCompletionResponse, ChatDelta, Content, ContentPart, FinishReason, FunctionCall,
-    FunctionCallDelta, FunctionDefinition, ImageUrl, Message, Role, ToolCall, ToolCallDelta,
-    ToolDefinition, ToolType, Usage,
+    FunctionCallDelta, FunctionDefinition, ImageUrl, Message, Role, ToolCall, ToolCallBatch,
+    ToolCallDelta, ToolDefinition, ToolType, Usage,
 };
 
 #[cfg(test)]

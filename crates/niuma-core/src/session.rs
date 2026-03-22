@@ -771,6 +771,43 @@ impl Session {
     pub fn clear_events(&mut self) {
         self.events.clear();
     }
+
+    /// Returns the number of user and agent messages in the session.
+    #[must_use]
+    pub fn message_count(&self) -> usize {
+        self.events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    ExecutionEvent::UserMessage { .. } | ExecutionEvent::AgentMessage { .. }
+                )
+            })
+            .count()
+    }
+
+    /// Returns events from the session that can be safely compressed.
+    ///
+    /// Returns the older half of events (excluding the most recent ones)
+    /// that are candidates for summarization.
+    #[must_use]
+    pub fn compressible_events(&self, keep_recent: usize) -> Vec<ExecutionEvent> {
+        if self.events.len() <= keep_recent {
+            return Vec::new();
+        }
+        let split = self.events.len() - keep_recent;
+        self.events[..split].to_vec()
+    }
+
+    /// Checks if the session exceeds the compression threshold.
+    ///
+    /// # Arguments
+    ///
+    /// * `threshold` - The number of events at which compression should be considered.
+    #[must_use]
+    pub fn should_compress(&self, threshold: usize) -> bool {
+        self.events.len() > threshold
+    }
 }
 
 #[cfg(test)]
@@ -858,6 +895,56 @@ mod tests {
         assert_eq!(session.event_count(), 2);
         assert_eq!(session.user_messages(), vec!["Hello"]);
         assert_eq!(session.agent_messages(), vec!["Hi there!"]);
+    }
+
+    #[test]
+    fn test_session_message_count() {
+        let mut session = Session::new();
+        assert_eq!(session.message_count(), 0);
+
+        session.add_event(ExecutionEvent::UserMessage {
+            content: "Hello".to_string(),
+        });
+        session.add_event(ExecutionEvent::AgentMessage {
+            content: "Hi there!".to_string(),
+        });
+        session.add_event(ExecutionEvent::ToolCall {
+            tool: "http".to_string(),
+            args: serde_json::json!({}),
+            result: ToolResult::success(serde_json::json!({})),
+        });
+        assert_eq!(session.message_count(), 2); // ToolCall doesn't count
+    }
+
+    #[test]
+    fn test_session_compressible_events() {
+        let mut session = Session::new();
+        for i in 0..10 {
+            session.add_event(ExecutionEvent::UserMessage {
+                content: format!("msg{}", i),
+            });
+        }
+
+        let compressible = session.compressible_events(3);
+        assert_eq!(compressible.len(), 7); // 10 - 3 = 7
+
+        // Should return empty if below threshold
+        let compressible = session.compressible_events(10);
+        assert!(compressible.is_empty());
+    }
+
+    #[test]
+    fn test_session_should_compress() {
+        let mut session = Session::new();
+        for i in 0..5 {
+            session.add_event(ExecutionEvent::UserMessage {
+                content: format!("msg{}", i),
+            });
+        }
+
+        assert!(!session.should_compress(10));
+        assert!(!session.should_compress(5));
+        assert!(session.should_compress(4));
     }
 
     #[test]
