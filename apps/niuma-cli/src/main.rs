@@ -22,9 +22,6 @@ use crate::{
     terminal::TerminalGuard, ui::render,
 };
 
-/// Default config file path.
-const DEFAULT_CONFIG_PATH: &str = "config.yaml";
-
 /// Niuma - An AI-powered task assistant.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -33,7 +30,9 @@ struct Args {
     #[arg(short, long, default_value = "true")]
     tui: bool,
 
-    /// Path to configuration file
+    /// Path to configuration file.
+    /// If not specified, searches in order:
+    /// ./config.yaml, ~/.config/niuma/config.yaml
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
 }
@@ -42,9 +41,7 @@ fn main() -> CliResult<()> {
     let args = Args::parse();
 
     // Load configuration
-    let config_path = args
-        .config
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
+    let config_path = args.config.unwrap_or_else(Config::default_path);
     let config = Config::load(&config_path)
         .map_err(|e| {
             eprintln!("Warning: Failed to load config: {}. Using defaults.", e);
@@ -60,8 +57,13 @@ fn main() -> CliResult<()> {
         );
     }
 
+    info!(
+        config_path = %config_path.display(),
+        "Configuration loaded"
+    );
+
     if args.tui {
-        run_tui()?;
+        run_tui(&config)?;
     } else {
         run_cli();
     }
@@ -76,7 +78,7 @@ fn run_cli() {
 }
 
 /// Runs the TUI application.
-fn run_tui() -> CliResult<()> {
+fn run_tui(config: &Config) -> CliResult<()> {
     // Set up panic hook to restore terminal BEFORE any potential panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -89,7 +91,7 @@ fn run_tui() -> CliResult<()> {
     }));
 
     // Create agent engine before entering alternate screen
-    let agent = create_agent_engine();
+    let agent = create_agent_engine(config);
 
     info!(provider = agent.provider_name(), "Agent engine initialized");
 
@@ -137,14 +139,34 @@ fn run_tui() -> CliResult<()> {
 }
 
 /// Creates the agent engine with configured LLM provider.
-fn create_agent_engine() -> Arc<AgentEngine> {
-    // Try to get API key from environment
-    let api_key = std::env::var("CLAUDE_API_KEY")
-        .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
-        .unwrap_or_else(|_| {
+fn create_agent_engine(config: &Config) -> Arc<AgentEngine> {
+    // Get provider config from config file, or fall back to environment
+    let api_key = config
+        .llm
+        .default_provider()
+        .ok()
+        .and_then(|p| {
+            if p.api_key.is_empty() || p.api_key.starts_with("${") {
+                None
+            } else {
+                Some(p.api_key.clone())
+            }
+        })
+        .or_else(|| std::env::var("CLAUDE_API_KEY").ok())
+        .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+        .unwrap_or_else(|| {
             info!("No API key found, using mock mode");
             "mock-api-key".to_string()
         });
+
+    let model = config
+        .llm
+        .default_provider()
+        .ok()
+        .and_then(|p| p.model.clone())
+        .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+
+    info!(model = %model, "Using LLM model");
 
     let llm_provider: Arc<dyn niuma_llm::LLMProvider> =
         Arc::new(niuma_llm::ClaudeProvider::new(&api_key));

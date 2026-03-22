@@ -7,9 +7,11 @@
 #![warn(rust_2024_compatibility)]
 #![warn(missing_debug_implementations)]
 
+pub mod config;
 pub mod error;
 pub mod session;
 
+pub use config::StorageConfig;
 pub use error::{Error, Result};
 pub use session::{
     Backoff, ClarifyResult, ClarifyState, Confidence, DialogueState, ExecutionEvent, ExecutionPlan,

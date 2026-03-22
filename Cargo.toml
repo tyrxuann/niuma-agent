@@ -30,6 +30,9 @@ tokio-cron-scheduler = "0.13"
 # Utilities (dev/test)
 tempfile = "3.18"
 
+# File system
+dirs = "6.0.0"
+
 # Error handling
 anyhow = "1.0.98"
 thiserror = "2.0.12"

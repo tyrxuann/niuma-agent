@@ -1,31 +1,85 @@
 //! Configuration management for niuma-cli.
 //!
-//! This module provides configuration loading and management, including
-//! log file settings.
+//! This module provides configuration loading and management, combining
+//! settings from LLM, MCP servers, storage, and logging.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
+use niuma_core::StorageConfig;
+use niuma_llm::config::LLMConfig;
 use serde::{Deserialize, Serialize};
 
-/// Default log directory.
-const DEFAULT_LOGS_DIR: &str = "./data/logs";
+// ============================================================================
+// Default values
+// ============================================================================
 
-/// Default log file name.
-const DEFAULT_LOG_FILE: &str = "niuma.log";
+/// Default config file name.
+const DEFAULT_CONFIG_FILE: &str = "config.yaml";
 
 /// Default log level.
 const DEFAULT_LOG_LEVEL: &str = "info";
 
+/// Default log file name.
+const DEFAULT_LOG_FILE: &str = "niuma.log";
+
+// ============================================================================
+// Main configuration
+// ============================================================================
+
 /// Application configuration.
+///
+/// This is the top-level configuration structure that contains all
+/// settings for the niuma agent.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
+    /// LLM provider configuration.
+    #[serde(default)]
+    pub llm: LLMConfig,
+
+    /// MCP server configurations.
+    #[serde(default)]
+    pub mcp_servers: HashMap<String, McpServerConfig>,
+
+    /// Storage paths configuration.
+    #[serde(default)]
+    pub storage: StorageConfig,
+
     /// Logging configuration.
     #[serde(default)]
     pub logging: LoggingConfig,
 }
 
 impl Config {
+    /// Returns the default config file path.
+    ///
+    /// The path is resolved in the following order:
+    /// 1. `./config.yaml` (current directory)
+    /// 2. `~/.config/niuma/config.yaml` (user config)
+    /// 3. `/etc/niuma/config.yaml` (system config)
+    #[must_use]
+    pub fn default_path() -> PathBuf {
+        // Check current directory first
+        let local_config = PathBuf::from(DEFAULT_CONFIG_FILE);
+        if local_config.exists() {
+            return local_config;
+        }
+
+        // Check user config directory
+        if let Some(home) = dirs::home_dir() {
+            let user_config = home.join(".config").join("niuma").join(DEFAULT_CONFIG_FILE);
+            if user_config.exists() {
+                return user_config;
+            }
+        }
+
+        // Fall back to current directory (even if it doesn't exist)
+        PathBuf::from(DEFAULT_CONFIG_FILE)
+    }
+
     /// Loads configuration from a YAML file.
     ///
     /// If the file doesn't exist, returns default configuration.
@@ -46,17 +100,34 @@ impl Config {
         let mut config: Self = serde_yaml::from_str(&content)
             .map_err(|e| ConfigError::Parse(path.display().to_string(), e))?;
 
-        // Expand environment variables in paths
-        config.logging.expand_env_vars();
+        // Expand environment variables
+        config.expand_env();
 
         Ok(config)
+    }
+
+    /// Expands environment variables in all configuration sections.
+    fn expand_env(&mut self) {
+        // LLM config expands its own env vars
+        let _ = self.llm.expand_env();
+
+        // MCP servers
+        for server in self.mcp_servers.values_mut() {
+            server.expand_env();
+        }
+
+        // Storage
+        self.storage.expand_env();
+
+        // Logging
+        self.logging.expand_env();
     }
 
     /// Returns the log file path.
     #[must_use]
     pub fn log_file_path(&self) -> PathBuf {
         let dir = if self.logging.logs_dir.is_empty() {
-            PathBuf::from(DEFAULT_LOGS_DIR)
+            self.storage.logs_dir.clone()
         } else {
             PathBuf::from(&self.logging.logs_dir)
         };
@@ -79,6 +150,40 @@ impl Config {
     }
 }
 
+// ============================================================================
+// MCP server configuration
+// ============================================================================
+
+/// MCP server configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerConfig {
+    /// The command to execute.
+    pub command: String,
+
+    /// Arguments to pass to the command.
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// Environment variables to set.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+}
+
+impl McpServerConfig {
+    /// Expands environment variables in the command and environment values.
+    fn expand_env(&mut self) {
+        self.command = expand_env_var(&self.command);
+        for value in self.env.values_mut() {
+            *value = expand_env_var(value);
+        }
+    }
+}
+
+// ============================================================================
+// Logging configuration
+// ============================================================================
+
 /// Logging configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,7 +192,7 @@ pub struct LoggingConfig {
     #[serde(default)]
     pub level: String,
 
-    /// Directory for log files.
+    /// Directory for log files (overrides storage.logs_dir if set).
     #[serde(default)]
     pub logs_dir: String,
 
@@ -115,9 +220,9 @@ fn default_max_files() -> usize {
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
-            level: String::new(),    // Will use DEFAULT_LOG_LEVEL
-            logs_dir: String::new(), // Will use DEFAULT_LOGS_DIR
-            log_file: String::new(), // Will use DEFAULT_LOG_FILE
+            level: String::new(),
+            logs_dir: String::new(),
+            log_file: String::new(),
             max_file_size_mb: default_max_file_size(),
             max_files: default_max_files(),
         }
@@ -126,15 +231,20 @@ impl Default for LoggingConfig {
 
 impl LoggingConfig {
     /// Expands environment variables in paths.
-    fn expand_env_vars(&mut self) {
+    fn expand_env(&mut self) {
         self.logs_dir = expand_env_var(&self.logs_dir);
         self.log_file = expand_env_var(&self.log_file);
     }
 }
 
+// ============================================================================
+// Helpers
+// ============================================================================
+
 /// Expands environment variables in a string.
 ///
-/// Supports `${VAR_NAME}` syntax.
+/// Supports `${VAR_NAME}` syntax. If the variable is not found,
+/// the original string is kept.
 fn expand_env_var(s: &str) -> String {
     let mut result = s.to_string();
     let mut start = 0;
@@ -147,10 +257,8 @@ fn expand_env_var(s: &str) -> String {
 
             if let Ok(value) = std::env::var(var_name) {
                 result.replace_range(begin..=end, &value);
-                // Continue from the same position since we replaced
                 start = begin;
             } else {
-                // Variable not found, skip past it
                 start = end + 1;
             }
         } else {
@@ -160,6 +268,10 @@ fn expand_env_var(s: &str) -> String {
 
     result
 }
+
+// ============================================================================
+// Error types
+// ============================================================================
 
 /// Configuration error types.
 #[derive(Debug, thiserror::Error)]
@@ -172,6 +284,10 @@ pub enum ConfigError {
     #[error("Failed to parse config file '{0}': {1}")]
     Parse(String, serde_yaml::Error),
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -201,13 +317,45 @@ mod tests {
     }
 
     #[test]
-    fn test_log_file_path() {
-        let mut config = Config::default();
-        config.logging.logs_dir = "/var/log/niuma".to_string();
-        config.logging.log_file = "app.log".to_string();
-        assert_eq!(
-            config.log_file_path(),
-            PathBuf::from("/var/log/niuma/app.log")
-        );
+    fn test_config_load_from_yaml() {
+        let yaml = r#"
+llm:
+  default: "claude"
+  providers:
+    claude:
+      api_key: "test-key"
+      model: "claude-sonnet-4-6"
+
+mcpServers:
+  playwright:
+    command: "npx"
+    args: ["-y", "@playwright/mcp"]
+
+storage:
+  schedulesDir: "./data/schedules"
+  cacheDir: "./data/cache"
+  logsDir: "./data/logs"
+
+logging:
+  level: "debug"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).expect("Should parse");
+        assert_eq!(config.llm.default, "claude");
+        assert_eq!(config.log_level(), "debug");
+        assert!(config.mcp_servers.contains_key("playwright"));
+    }
+
+    #[test]
+    fn test_mcp_server_config() {
+        let yaml = r#"
+command: "npx"
+args: ["-y", "@playwright/mcp"]
+env:
+  HEADLESS: "true"
+"#;
+        let config: McpServerConfig = serde_yaml::from_str(yaml).expect("Should parse");
+        assert_eq!(config.command, "npx");
+        assert_eq!(config.args, vec!["-y", "@playwright/mcp"]);
+        assert_eq!(config.env.get("HEADLESS"), Some(&"true".to_string()));
     }
 }

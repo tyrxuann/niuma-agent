@@ -15,7 +15,8 @@ homepage.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
-uuid = { version = "1.18", features = ["v4", "serde"] }
 serde_json.workspace = true
+serde_yaml.workspace = true
+uuid = { version = "1.18", features = ["v4", "serde"] }
 tokio.workspace = true
 tracing.workspace = true
