@@ -1,10 +1,8 @@
 [package]
-name = "niuma-agent-core"
-description = """
-
-"""
+name = "niuma-agent"
+description = "Agent orchestration and execution logic for niuma"
 categories = ["development-tools"]
-keywords = []
+keywords = ["agent", "ai", "orchestration"]
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -14,8 +12,12 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+niuma-core.workspace = true
+niuma-llm.workspace = true
+niuma-tools.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true

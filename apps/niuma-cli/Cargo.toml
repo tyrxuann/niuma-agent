@@ -1,0 +1,28 @@
+[package]
+name = "niuma-cli"
+description = "Command line interface for niuma agent"
+categories = ["command-line-interface"]
+keywords = ["agent", "ai", "cli", "tui"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "niuma"
+path = "src/main.rs"
+
+[dependencies]
+niuma-core.workspace = true
+niuma-llm.workspace = true
+niuma-tools.workspace = true
+niuma-agent.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+clap.workspace = true
+ratatui.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
