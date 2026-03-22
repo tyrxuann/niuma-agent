@@ -29,6 +29,7 @@ clap = { version = "4.6.0", features = ["derive", "env", "string"] }
 
 # TUI
 ratatui = "0.30.0"
+crossterm = "0.29.0"
 
 # Tracing
 tracing = "0.1.41"
