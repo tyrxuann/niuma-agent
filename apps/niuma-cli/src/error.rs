@@ -13,7 +13,6 @@ pub enum CliError {
 
     /// TUI initialization error.
     #[error("Failed to initialize TUI: {0}")]
-    #[expect(dead_code, reason = "Public API for future TUI initialization errors")]
     TuiInit(String),
 
     /// Event handling error.

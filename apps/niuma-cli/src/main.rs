@@ -13,7 +13,6 @@ mod ui;
 use std::{sync::Arc, time::Duration};
 
 use clap::Parser;
-use tracing::info;
 
 use crate::{
     agent::AgentEngine, app::App, error::CliResult, event::EventHandler, terminal::TerminalGuard,
@@ -30,21 +29,25 @@ struct Args {
 }
 
 fn main() -> CliResult<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_target(false)
-        .init();
-
     let args = Args::parse();
 
     if args.tui {
         run_tui()?;
     } else {
+        // Only init logging for non-TUI mode
+        init_logging();
         run_cli();
     }
 
     Ok(())
+}
+
+/// Initialize logging (only for non-TUI mode).
+fn init_logging() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_target(false)
+        .init();
 }
 
 /// Runs the CLI in non-TUI mode.
@@ -55,20 +58,22 @@ fn run_cli() {
 
 /// Runs the TUI application.
 fn run_tui() -> CliResult<()> {
-    // Set up panic hook to restore terminal
+    // Set up panic hook to restore terminal BEFORE any potential panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
-        // Attempt to restore terminal state
+        // Restore terminal state immediately
         let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+        let _ = crossterm::execute!(std::io::stderr(), crossterm::terminal::LeaveAlternateScreen);
+        // Print panic info to stderr
+        eprintln!("\n Panic occurred: {}", panic_info);
         original_hook(panic_info);
     }));
 
-    // Initialize terminal
-    let mut terminal_guard = TerminalGuard::new()?;
-
-    // Create agent engine
+    // Create agent engine before entering alternate screen
     let agent = create_agent_engine();
+
+    // Initialize terminal (enters alternate screen and raw mode)
+    let mut terminal_guard = TerminalGuard::new()?;
 
     // Create app and event handler
     let mut app = App::with_agent(Arc::clone(&agent));
@@ -78,7 +83,7 @@ fn run_tui() -> CliResult<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("Failed to create runtime");
+        .map_err(|e| crate::error::CliError::TuiInit(e.to_string()))?;
 
     runtime.block_on(async {
         while !app.should_quit {
@@ -86,18 +91,28 @@ fn run_tui() -> CliResult<()> {
             app.process_pending().await;
 
             // Draw UI
-            terminal_guard
+            if let Err(e) = terminal_guard
                 .terminal()
                 .draw(|frame| render(&mut app, frame))
-                .expect("Failed to draw");
+            {
+                // If draw fails, try to restore terminal and exit
+                eprintln!("Draw error: {}", e);
+                break;
+            }
 
             // Handle input
-            let event = events.next().expect("Failed to read event");
-            app.handle_event(event);
+            match events.next() {
+                Ok(event) => app.handle_event(event),
+                Err(e) => {
+                    // If input fails, try to restore terminal and exit
+                    eprintln!("Input error: {}", e);
+                    break;
+                }
+            }
         }
     });
 
-    info!("Application shutting down");
+    // TerminalGuard drop will restore terminal automatically
     Ok(())
 }
 
@@ -106,14 +121,10 @@ fn create_agent_engine() -> Arc<AgentEngine> {
     // Try to get API key from environment
     let api_key = std::env::var("CLAUDE_API_KEY")
         .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
-        .unwrap_or_else(|_| {
-            info!("No API key found, using mock mode");
-            "mock-api-key".to_string()
-        });
+        .unwrap_or_else(|_| "mock-api-key".to_string());
 
     let llm_provider: Arc<dyn niuma_llm::LLMProvider> =
         Arc::new(niuma_llm::ClaudeProvider::new(&api_key));
 
-    info!(provider = llm_provider.name(), "Agent engine initialized");
     Arc::new(AgentEngine::new(llm_provider))
 }

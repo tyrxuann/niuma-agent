@@ -11,7 +11,6 @@ use niuma_llm::LLMProvider;
 use niuma_tools::ToolRegistry;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::{debug, info};
 
 /// The agent engine that orchestrates all agent components.
 #[derive(Debug)]
@@ -73,13 +72,8 @@ impl AgentEngine {
             content: message.to_string(),
         });
 
-        // Check if we should compress the session
-        if session.should_compress(100) {
-            info!(
-                event_count = session.events.len(),
-                "Session exceeds compression threshold"
-            );
-        }
+        // Check if we should compress the session (for now, just track - no compression)
+        let _ = session.should_compress(100);
 
         // Check if we're in clarification mode
         {
@@ -88,7 +82,6 @@ impl AgentEngine {
                 let result = self.clarifier.process(message, ctx).await;
                 match result {
                     Ok(niuma_core::ClarifyResult::Complete { gathered }) => {
-                        info!(gathered_count = gathered.len(), "Clarification complete");
                         let plan =
                             self.build_plan_from_gathered(&gathered, session.goal.as_deref());
                         drop(ctx_guard);
@@ -99,7 +92,6 @@ impl AgentEngine {
                         question,
                         remaining,
                     }) => {
-                        debug!(question, remaining, "More clarification needed");
                         return AgentResponse::Clarifying {
                             question,
                             remaining,
@@ -107,7 +99,6 @@ impl AgentEngine {
                         };
                     }
                     Ok(niuma_core::ClarifyResult::Failed { reason }) => {
-                        info!(reason, "Clarification failed");
                         *ctx_guard = None;
                         return AgentResponse::Error {
                             message: format!("Clarification failed: {}", reason),
@@ -125,7 +116,6 @@ impl AgentEngine {
 
         // Check plan cache first
         if let Some(cached_plan) = self.plan_cache.get_by_goal(message) {
-            info!(goal = message, "Cache hit for goal");
             return self.execute_plan(cached_plan).await;
         }
 
@@ -138,12 +128,6 @@ impl AgentEngine {
                 };
             }
         };
-
-        debug!(
-            intent = ?classification.intent,
-            confidence = ?classification.confidence,
-            "Intent classified"
-        );
 
         match &classification.strategy {
             ExecutionStrategy::Clarifying { missing } => {
@@ -233,8 +217,6 @@ impl AgentEngine {
         if let Some(goal) = &session.goal {
             self.plan_cache.put(goal, plan.clone());
         }
-
-        info!(step_count = plan.steps.len(), "Executing plan");
 
         match self.executor.execute(&plan, &mut session).await {
             Ok(result) => {
