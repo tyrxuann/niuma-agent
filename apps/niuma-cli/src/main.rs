@@ -5,19 +5,25 @@
 
 mod agent;
 mod app;
+mod config;
 mod error;
 mod event;
+mod logger;
 mod terminal;
 mod ui;
 
-use std::{sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use clap::Parser;
+use tracing::info;
 
 use crate::{
-    agent::AgentEngine, app::App, error::CliResult, event::EventHandler, terminal::TerminalGuard,
-    ui::render,
+    agent::AgentEngine, app::App, config::Config, error::CliResult, event::EventHandler,
+    terminal::TerminalGuard, ui::render,
 };
+
+/// Default config file path.
+const DEFAULT_CONFIG_PATH: &str = "config.yaml";
 
 /// Niuma - An AI-powered task assistant.
 #[derive(Parser, Debug)]
@@ -26,28 +32,41 @@ struct Args {
     /// Run in TUI mode (default: true)
     #[arg(short, long, default_value = "true")]
     tui: bool,
+
+    /// Path to configuration file
+    #[arg(short, long, value_name = "FILE")]
+    config: Option<PathBuf>,
 }
 
 fn main() -> CliResult<()> {
     let args = Args::parse();
 
+    // Load configuration
+    let config_path = args
+        .config
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
+    let config = Config::load(&config_path)
+        .map_err(|e| {
+            eprintln!("Warning: Failed to load config: {}. Using defaults.", e);
+            Config::default()
+        })
+        .unwrap_or_default();
+
+    // Initialize logging to file
+    if let Err(e) = crate::logger::init_logging(&config) {
+        eprintln!(
+            "Warning: Failed to initialize file logging: {}. Logs will not be saved.",
+            e
+        );
+    }
+
     if args.tui {
         run_tui()?;
     } else {
-        // Only init logging for non-TUI mode
-        init_logging();
         run_cli();
     }
 
     Ok(())
-}
-
-/// Initialize logging (only for non-TUI mode).
-fn init_logging() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_target(false)
-        .init();
 }
 
 /// Runs the CLI in non-TUI mode.
@@ -65,12 +84,14 @@ fn run_tui() -> CliResult<()> {
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stderr(), crossterm::terminal::LeaveAlternateScreen);
         // Print panic info to stderr
-        eprintln!("\n Panic occurred: {}", panic_info);
+        eprintln!("\nPanic occurred: {}", panic_info);
         original_hook(panic_info);
     }));
 
     // Create agent engine before entering alternate screen
     let agent = create_agent_engine();
+
+    info!(provider = agent.provider_name(), "Agent engine initialized");
 
     // Initialize terminal (enters alternate screen and raw mode)
     let mut terminal_guard = TerminalGuard::new()?;
@@ -95,8 +116,7 @@ fn run_tui() -> CliResult<()> {
                 .terminal()
                 .draw(|frame| render(&mut app, frame))
             {
-                // If draw fails, try to restore terminal and exit
-                eprintln!("Draw error: {}", e);
+                info!(error = %e, "Draw error, exiting TUI loop");
                 break;
             }
 
@@ -104,14 +124,14 @@ fn run_tui() -> CliResult<()> {
             match events.next() {
                 Ok(event) => app.handle_event(event),
                 Err(e) => {
-                    // If input fails, try to restore terminal and exit
-                    eprintln!("Input error: {}", e);
+                    info!(error = %e, "Input error, exiting TUI loop");
                     break;
                 }
             }
         }
     });
 
+    info!("Application shutting down");
     // TerminalGuard drop will restore terminal automatically
     Ok(())
 }
@@ -121,7 +141,10 @@ fn create_agent_engine() -> Arc<AgentEngine> {
     // Try to get API key from environment
     let api_key = std::env::var("CLAUDE_API_KEY")
         .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
-        .unwrap_or_else(|_| "mock-api-key".to_string());
+        .unwrap_or_else(|_| {
+            info!("No API key found, using mock mode");
+            "mock-api-key".to_string()
+        });
 
     let llm_provider: Arc<dyn niuma_llm::LLMProvider> =
         Arc::new(niuma_llm::ClaudeProvider::new(&api_key));

@@ -20,6 +20,19 @@ mcp_servers:
     env:
       HEADLESS: "true"
 
+# Logging configuration
+logging:
+  # Log level: trace, debug, info, warn, error
+  level: "info"
+  # Directory for log files
+  logs_dir: "./data/logs"
+  # Log file name (within logs_dir)
+  log_file: "niuma.log"
+  # Maximum log file size in MB before rotation
+  max_file_size_mb: 10
+  # Maximum number of rotated log files to keep
+  max_files: 5
+
 storage:
   schedules_dir: "./data/schedules"
   cache_dir: "./data/cache"

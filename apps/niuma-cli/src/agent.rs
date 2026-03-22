@@ -11,6 +11,7 @@ use niuma_llm::LLMProvider;
 use niuma_tools::ToolRegistry;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use tracing::{debug, info};
 
 /// The agent engine that orchestrates all agent components.
 #[derive(Debug)]
@@ -23,12 +24,14 @@ pub struct AgentEngine {
     tools: Arc<ToolRegistry>,
     current_session: RwLock<Session>,
     clarify_ctx: RwLock<Option<ClarifyContext>>,
+    llm_provider_name: String,
 }
 
 impl AgentEngine {
     /// Creates a new agent engine with the given LLM provider.
     #[must_use]
     pub fn new(llm: Arc<dyn LLMProvider>) -> Self {
+        let provider_name = llm.name().to_string();
         let tools = Arc::new(ToolRegistry::with_builtins());
         Self {
             intent_parser: IntentParser::new(Arc::clone(&llm)),
@@ -38,7 +41,14 @@ impl AgentEngine {
             tools,
             current_session: RwLock::new(Session::new()),
             clarify_ctx: RwLock::new(None),
+            llm_provider_name: provider_name,
         }
+    }
+
+    /// Returns the LLM provider name.
+    #[must_use]
+    pub fn provider_name(&self) -> &str {
+        &self.llm_provider_name
     }
 
     /// Creates a new agent engine with a plan cache persistence directory.
@@ -48,6 +58,7 @@ impl AgentEngine {
         llm: Arc<dyn LLMProvider>,
         cache_dir: std::path::PathBuf,
     ) -> Self {
+        let provider_name = llm.name().to_string();
         let tools = Arc::new(ToolRegistry::with_builtins());
         Self {
             intent_parser: IntentParser::new(Arc::clone(&llm)),
@@ -57,6 +68,7 @@ impl AgentEngine {
             tools,
             current_session: RwLock::new(Session::new()),
             clarify_ctx: RwLock::new(None),
+            llm_provider_name: provider_name,
         }
     }
 
@@ -65,6 +77,8 @@ impl AgentEngine {
     /// This is the main entry point for the TUI. It handles the full
     /// flow from intent classification to execution.
     pub async fn process_message(&self, message: &str) -> AgentResponse {
+        info!(message = %message, "Processing user message");
+
         let mut session = self.current_session.write().await;
 
         // Add user message to session
@@ -72,8 +86,13 @@ impl AgentEngine {
             content: message.to_string(),
         });
 
-        // Check if we should compress the session (for now, just track - no compression)
-        let _ = session.should_compress(100);
+        // Check if we should compress the session
+        if session.should_compress(100) {
+            info!(
+                event_count = session.events.len(),
+                "Session exceeds compression threshold"
+            );
+        }
 
         // Check if we're in clarification mode
         {
@@ -82,6 +101,7 @@ impl AgentEngine {
                 let result = self.clarifier.process(message, ctx).await;
                 match result {
                     Ok(niuma_core::ClarifyResult::Complete { gathered }) => {
+                        info!(gathered_count = gathered.len(), "Clarification complete");
                         let plan =
                             self.build_plan_from_gathered(&gathered, session.goal.as_deref());
                         drop(ctx_guard);
@@ -92,6 +112,7 @@ impl AgentEngine {
                         question,
                         remaining,
                     }) => {
+                        debug!(question, remaining, "More clarification needed");
                         return AgentResponse::Clarifying {
                             question,
                             remaining,
@@ -99,12 +120,14 @@ impl AgentEngine {
                         };
                     }
                     Ok(niuma_core::ClarifyResult::Failed { reason }) => {
+                        info!(reason, "Clarification failed");
                         *ctx_guard = None;
                         return AgentResponse::Error {
                             message: format!("Clarification failed: {}", reason),
                         };
                     }
                     Err(e) => {
+                        info!(error = %e, "Clarification error");
                         *ctx_guard = None;
                         return AgentResponse::Error {
                             message: format!("Error during clarification: {}", e),
@@ -116,6 +139,7 @@ impl AgentEngine {
 
         // Check plan cache first
         if let Some(cached_plan) = self.plan_cache.get_by_goal(message) {
+            info!(goal = message, "Cache hit for goal");
             return self.execute_plan(cached_plan).await;
         }
 
@@ -123,14 +147,22 @@ impl AgentEngine {
         let classification = match self.intent_parser.classify(message).await {
             Ok(c) => c,
             Err(e) => {
+                info!(error = %e, "Intent classification failed");
                 return AgentResponse::Error {
                     message: format!("Failed to classify intent: {}", e),
                 };
             }
         };
 
+        debug!(
+            intent = ?classification.intent,
+            confidence = ?classification.confidence,
+            "Intent classified"
+        );
+
         match &classification.strategy {
             ExecutionStrategy::Clarifying { missing } => {
+                info!(missing_count = missing.len(), "Starting clarification");
                 let mut ctx = ClarifyContext::with_missing(missing.clone());
                 let first_question = match self.clarifier.next_question(missing).await {
                     Ok(q) => q,
@@ -156,10 +188,12 @@ impl AgentEngine {
             }
             ExecutionStrategy::Autonomous => match &classification.intent {
                 UserIntent::ExecuteNow { goal } => {
+                    info!(goal, "Executing task immediately");
                     let plan = self.build_plan_from_goal(goal).await;
                     return self.execute_plan(plan).await;
                 }
                 UserIntent::CreateScheduledTask { goal, schedule } => {
+                    info!(goal, schedule, "Creating scheduled task");
                     AgentResponse::ScheduledTask {
                         goal: goal.clone(),
                         schedule: schedule.clone(),
@@ -167,15 +201,19 @@ impl AgentEngine {
                     }
                 }
                 UserIntent::SaveAsScheduledTask { name, schedule } => {
+                    info!(name, schedule, "Saving as scheduled task");
                     AgentResponse::ScheduledTask {
                         goal: name.clone(),
                         schedule: schedule.clone(),
                         message: format!("Saved as scheduled task '{}'", name),
                     }
                 }
-                UserIntent::Other(desc) => AgentResponse::Message {
-                    content: format!("I understand you want: {}. Let me help with that.", desc),
-                },
+                UserIntent::Other(desc) => {
+                    debug!(desc, "Other intent");
+                    AgentResponse::Message {
+                        content: format!("I understand you want: {}. Let me help with that.", desc),
+                    }
+                }
             },
         }
     }
@@ -218,9 +256,16 @@ impl AgentEngine {
             self.plan_cache.put(goal, plan.clone());
         }
 
+        info!(step_count = plan.steps.len(), "Executing plan");
+
         match self.executor.execute(&plan, &mut session).await {
             Ok(result) => {
                 if result.success {
+                    info!(
+                        step_count = result.step_results.len(),
+                        duration_ms = result.total_duration.as_millis(),
+                        "Execution completed successfully"
+                    );
                     AgentResponse::ExecutionComplete {
                         success: true,
                         step_count: result.step_results.len(),
@@ -234,6 +279,7 @@ impl AgentEngine {
                     let error_msg = result
                         .error
                         .unwrap_or_else(|| "Execution failed".to_string());
+                    info!(error = %error_msg, "Execution failed");
                     AgentResponse::ExecutionComplete {
                         success: false,
                         step_count: result.step_results.len(),
@@ -242,9 +288,12 @@ impl AgentEngine {
                     }
                 }
             }
-            Err(e) => AgentResponse::Error {
-                message: format!("Execution error: {}", e),
-            },
+            Err(e) => {
+                info!(error = %e, "Execution error");
+                AgentResponse::Error {
+                    message: format!("Execution error: {}", e),
+                }
+            }
         }
     }
 
