@@ -21,7 +21,14 @@ futures = "0.3.31"
 # Serialization
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.142"
+serde_yaml = "0.9"
 uuid = { version = "1.18", features = ["v4", "serde"] }
+
+# Scheduling
+tokio-cron-scheduler = "0.13"
+
+# Utilities (dev/test)
+tempfile = "3.18"
 
 # Error handling
 anyhow = "1.0.98"

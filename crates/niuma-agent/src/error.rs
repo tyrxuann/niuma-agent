@@ -106,6 +106,12 @@ impl Error {
     pub fn llm(msg: impl Into<String>) -> Self {
         Self::LLMError(msg.into())
     }
+
+    /// Creates a new scheduler error.
+    #[must_use]
+    pub fn scheduler(msg: impl Into<String>) -> Self {
+        Self::Scheduler(msg.into())
+    }
 }
 
 impl From<niuma_llm::Error> for Error {
