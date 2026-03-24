@@ -207,7 +207,14 @@ fn handle_claude_error(status: u16, body: &str) -> Error {
         401 => Error::AuthenticationError("Invalid API key".to_string()),
         429 => Error::RateLimitExceeded,
         408 => Error::Timeout,
-        404 => Error::ModelNotFound("Model not found".to_string()),
+        404 => {
+            // Try to parse the error response for more details
+            if let Ok(error_response) = serde_json::from_str::<ClaudeErrorResponse>(body) {
+                Error::ModelNotFound(error_response.error.message)
+            } else {
+                Error::ModelNotFound(format!("Endpoint not found: {body}"))
+            }
+        }
         _ => {
             // Try to parse the error response
             if let Ok(error_response) = serde_json::from_str::<ClaudeErrorResponse>(body) {

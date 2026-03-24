@@ -7,9 +7,9 @@ llm:
   default: "claude"
   providers:
     claude:
-      api_key: "${CLAUDE_API_KEY}"
+      api_key: "${ANTHROPIC_AUTH_TOKEN}"
       model: "claude-sonnet-4-6"
-      # base_url: "https://api.anthropic.com/v1/messages"  # Optional: custom endpoint
+      base_url: "${ANTHROPIC_BASE_URL}"  # Optional: custom endpoint
     openai:
       api_key: "${OPENAI_API_KEY}"
       model: "gpt-4o"

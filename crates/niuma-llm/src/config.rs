@@ -125,18 +125,32 @@ impl ProviderConfig {
         self.model.clone().unwrap_or_else(|| default.to_string())
     }
 
-    /// Expands environment variables in the API key.
+    /// Expands environment variables in the API key and base_url.
     ///
     /// Supports the syntax `${VAR_NAME}` which will be replaced with
     /// the value of the environment variable.
     ///
     /// # Errors
     ///
-    /// Returns an error if the environment variable is not set.
+    /// Returns an error if the API key environment variable is not set.
+    /// For base_url, if the environment variable is not set, it will be set to None.
     pub fn expand_env(&mut self) -> Result<()> {
         self.api_key = expand_env_var(&self.api_key)?;
-        if let Some(ref mut url) = self.base_url {
-            *url = expand_env_var(url)?;
+        if let Some(ref url) = self.base_url {
+            match expand_env_var(url) {
+                Ok(expanded) => {
+                    // If expanded URL is empty, set to None
+                    if expanded.is_empty() {
+                        self.base_url = None;
+                    } else {
+                        self.base_url = Some(expanded);
+                    }
+                }
+                Err(_) => {
+                    // Environment variable not found, set base_url to None
+                    self.base_url = None;
+                }
+            }
         }
         Ok(())
     }
