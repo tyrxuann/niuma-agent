@@ -9,9 +9,11 @@ llm:
     claude:
       api_key: "${CLAUDE_API_KEY}"
       model: "claude-sonnet-4-6"
+      # base_url: "https://api.anthropic.com/v1/messages"  # Optional: custom endpoint
     openai:
       api_key: "${OPENAI_API_KEY}"
       model: "gpt-4o"
+      # base_url: "https://your-resource.openai.ai/v1"  # Optional: custom endpoint or Azure
 
 mcp_servers:
   playwright:

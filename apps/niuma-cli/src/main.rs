@@ -140,11 +140,10 @@ fn run_tui(config: &Config) -> CliResult<()> {
 
 /// Creates the agent engine with configured LLM provider.
 fn create_agent_engine(config: &Config) -> Arc<AgentEngine> {
-    // Get provider config from config file, or fall back to environment
-    let api_key = config
-        .llm
-        .default_provider()
-        .ok()
+    let provider_config = config.llm.default_provider().ok();
+
+    // Resolve API key: config > CLAUDE_API_KEY > ANTHROPIC_API_KEY > mock
+    let api_key = provider_config
         .and_then(|p| {
             if p.api_key.is_empty() || p.api_key.starts_with("${") {
                 None
@@ -159,17 +158,25 @@ fn create_agent_engine(config: &Config) -> Arc<AgentEngine> {
             "mock-api-key".to_string()
         });
 
-    let model = config
-        .llm
-        .default_provider()
-        .ok()
+    // Resolve model from config, or use default
+    let model = provider_config
         .and_then(|p| p.model.clone())
         .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
 
-    info!(model = %model, "Using LLM model");
+    // Resolve base URL from config (optional, for custom endpoints)
+    let base_url = provider_config.and_then(|p| p.base_url.clone());
 
-    let llm_provider: Arc<dyn niuma_llm::LLMProvider> =
-        Arc::new(niuma_llm::ClaudeProvider::new(&api_key));
+    info!(model = %model, ?base_url, "Using LLM provider");
+
+    let llm_provider: Arc<dyn niuma_llm::LLMProvider> = if let Some(url) = base_url {
+        Arc::new(
+            niuma_llm::ClaudeProvider::new(&api_key)
+                .with_model(&model)
+                .with_base_url(&url),
+        )
+    } else {
+        Arc::new(niuma_llm::ClaudeProvider::new(&api_key).with_model(&model))
+    };
 
     Arc::new(AgentEngine::new(llm_provider))
 }
