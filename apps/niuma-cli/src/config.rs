@@ -59,7 +59,6 @@ impl Config {
     /// The path is resolved in the following order:
     /// 1. `./config.yaml` (current directory)
     /// 2. `~/.config/niuma/config.yaml` (user config)
-    /// 3. `/etc/niuma/config.yaml` (system config)
     #[must_use]
     pub fn default_path() -> PathBuf {
         // Check current directory first
@@ -119,24 +118,22 @@ impl Config {
         // Storage
         self.storage.expand_env();
 
-        // Logging
+        // Logging (only file field, logs_dir comes from storage)
         self.logging.expand_env();
     }
 
     /// Returns the log file path.
+    ///
+    /// Uses `storage.logs_dir` as the directory and `logging.file` as the filename.
     #[must_use]
     pub fn log_file_path(&self) -> PathBuf {
-        let dir = if self.logging.logs_dir.is_empty() {
-            self.storage.logs_dir.clone()
+        let dir = self.storage.logs_dir.clone();
+        let file = if self.logging.file.is_empty() {
+            DEFAULT_LOG_FILE
         } else {
-            PathBuf::from(&self.logging.logs_dir)
+            &self.logging.file
         };
-
-        if self.logging.log_file.is_empty() {
-            dir.join(DEFAULT_LOG_FILE)
-        } else {
-            dir.join(&self.logging.log_file)
-        }
+        dir.join(file)
     }
 
     /// Returns the log level as a tracing level string.
@@ -185,6 +182,9 @@ impl McpServerConfig {
 // ============================================================================
 
 /// Logging configuration.
+///
+/// Note: Log files are stored in `storage.logs_dir`. The `file` field
+/// specifies the filename within that directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoggingConfig {
@@ -192,25 +192,13 @@ pub struct LoggingConfig {
     #[serde(default)]
     pub level: String,
 
-    /// Directory for log files (overrides storage.logs_dir if set).
+    /// Log file name (stored in storage.logs_dir).
     #[serde(default)]
-    pub logs_dir: String,
-
-    /// Log file name.
-    #[serde(default)]
-    pub log_file: String,
-
-    /// Maximum log file size in MB before rotation.
-    #[serde(default = "default_max_file_size")]
-    pub max_file_size_mb: u64,
+    pub file: String,
 
     /// Maximum number of rotated log files to keep.
     #[serde(default = "default_max_files")]
     pub max_files: usize,
-}
-
-fn default_max_file_size() -> u64 {
-    10 // 10 MB
 }
 
 fn default_max_files() -> usize {
@@ -221,19 +209,16 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             level: String::new(),
-            logs_dir: String::new(),
-            log_file: String::new(),
-            max_file_size_mb: default_max_file_size(),
+            file: String::new(),
             max_files: default_max_files(),
         }
     }
 }
 
 impl LoggingConfig {
-    /// Expands environment variables in paths.
+    /// Expands environment variables in the file field.
     fn expand_env(&mut self) {
-        self.logs_dir = expand_env_var(&self.logs_dir);
-        self.log_file = expand_env_var(&self.log_file);
+        self.file = expand_env_var(&self.file);
     }
 }
 
@@ -338,11 +323,16 @@ storage:
 
 logging:
   level: "debug"
+  file: "niuma.log"
 "#;
         let config: Config = serde_yaml::from_str(yaml).expect("Should parse");
         assert_eq!(config.llm.default, "claude");
         assert_eq!(config.log_level(), "debug");
         assert!(config.mcp_servers.contains_key("playwright"));
+        assert_eq!(
+            config.log_file_path(),
+            PathBuf::from("./data/logs/niuma.log")
+        );
     }
 
     #[test]
@@ -357,5 +347,16 @@ env:
         assert_eq!(config.command, "npx");
         assert_eq!(config.args, vec!["-y", "@playwright/mcp"]);
         assert_eq!(config.env.get("HEADLESS"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn test_log_file_path_uses_storage_logs_dir() {
+        let mut config = Config::default();
+        config.storage.logs_dir = PathBuf::from("/var/log/niuma");
+        config.logging.file = "app.log".to_string();
+        assert_eq!(
+            config.log_file_path(),
+            PathBuf::from("/var/log/niuma/app.log")
+        );
     }
 }
