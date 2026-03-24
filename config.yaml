@@ -1,0 +1,41 @@
+# Niuma Agent Configuration
+#
+# All API keys should be provided via environment variables.
+# Use ${VAR_NAME} syntax for environment variable expansion.
+
+llm:
+  default: "claude"
+  providers:
+    claude:
+      api_key: "${ANTHROPIC_AUTH_TOKEN}"
+      model: "claude-sonnet-4-6"
+      base_url: "${ANTHROPIC_BASE_URL}"  # Optional: custom endpoint
+    openai:
+      api_key: "${OPENAI_API_KEY}"
+      model: "gpt-4o"
+      # base_url: "https://your-resource.openai.ai/v1"  # Optional: custom endpoint or Azure
+
+mcp_servers:
+  playwright:
+    command: "npx"
+    args: ["-y", "@playwright/mcp"]
+    env:
+      HEADLESS: "true"
+
+# Storage configuration
+storage:
+  # Directory for scheduled task definitions
+  schedules_dir: "./data/schedules"
+  # Directory for cached data (e.g., execution plans)
+  cache_dir: "./data/cache"
+  # Directory for all log files
+  logs_dir: "./data/logs"
+
+# Logging configuration
+logging:
+  # Log level: trace, debug, info, warn, error
+  level: "info"
+  # Log file name (within storage.logs_dir)
+  file: "niuma.log"
+  # Maximum number of rotated log files to keep
+  max_files: 5

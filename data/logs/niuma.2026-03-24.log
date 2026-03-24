@@ -1,0 +1,7 @@
+2026-03-24T08:29:26.725670Z  INFO niuma::logger: 67: Logging initialized log_file=./data/logs/niuma.log level=info
+2026-03-24T08:29:26.725892Z  INFO niuma: 60: Configuration loaded config_path=config.yaml
+2026-03-24T08:29:26.725976Z  INFO niuma: 169: Using LLM provider model=claude-sonnet-4-6 base_url=Some("http://www.claudecodeserver.top/api")
+2026-03-24T08:29:26.729567Z  INFO niuma_tools::registry: 78: Registered 4 built-in tools
+2026-03-24T08:29:26.729829Z  INFO niuma: 96: Agent engine initialized provider="claude"
+2026-03-24T08:29:37.850293Z  INFO niuma::agent: 80: Processing user message 我想要添加一个定时任务。
+2026-03-24T08:29:39.087233Z  INFO niuma::agent: 150: Intent classification failed error=LLM provider error: Model 'Model not found' not found
